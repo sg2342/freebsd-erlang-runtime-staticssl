@@ -35,7 +35,7 @@ SUB_LIST=	_ERLANG_LIB=${_ERLANG_LIB}
 WRKSRC=		${WRKSRC_otp}
 
 OPTIONS_DEFINE=		CHUNKS CORBA DTRACE JAVA KQUEUE ODBC OPENSSL SCTP \
-			SHARING WX
+			SHARING WX STATICSSL
 OPTIONS_DEFAULT=	CHUNKS CORBA DTRACE KQUEUE OPENSSL SCTP SHARING
 
 .if !exists(/usr/sbin/dtrace)
@@ -57,6 +57,7 @@ KQUEUE_DESC=	Enable Kernel Poll (kqueue) support
 SCTP_DESC=	Enable SCTP support
 SHARING_DESC=	Enable term copy-and-share support
 WX_DESC=	Enable WX application
+STATICSSL_DESC=	Link OpenSSL libcrypto statically to the crypto driver
 
 # If you run Erlang and get a message resembling "WARNING: number of
 # probes fixed does not match the number of defined probes (54 != 132,
@@ -102,11 +103,22 @@ CONFIGURE_ARGS+=	--disable-year2038
 MAKE_ARGS+=	ARCH=arm
 .endif
 
+.if ${PORT_OPTIONS:MSTATICSSL}
+BUILD_DEPENDS+=${NONEXISTENT}:security/openssl:stage
+CONFIGURE_ARGS+=--with-ssl=${WRKDIR}/openssl
+CONFIGURE_ARGS+=--disable-dynamic-ssl-lib
+.endif
+
 pre-configure-WX-off:
 	echo "disabled by port options" > ${WRKSRC}/lib/debugger/SKIP
 	echo "disabled by port options" > ${WRKSRC}/lib/et/SKIP
 	echo "disabled by port options" > ${WRKSRC}/lib/observer/SKIP
 	echo "disabled by port options" > ${WRKSRC}/lib/wx/SKIP
+
+pre-configure-STATICSSL-on:
+	@cd `${MAKE} -V STAGEDIR -C ${PORTSDIR}/security/openssl`${PREFIX} \
+		&& ${FIND} -E . ! -name *.so\* | ${CPIO} -dump ${WRKDIR}/openssl \
+	 >/dev/null 2>&1
 
 post-configure-ODBC-on:
 	${RM} ${WRKSRC}/lib/odbc/SKIP
