@@ -1,6 +1,6 @@
 PORTNAME=	erlang
 DISTVERSIONPREFIX=	OTP-
-DISTVERSION=	27.0
+DISTVERSION=	27.3.2
 CATEGORIES=	lang parallel java
 PKGNAMESUFFIX=	-runtime${PORTVERSION:C/\..*//}
 DIST_SUBDIR=	erlang
@@ -104,9 +104,12 @@ MAKE_ARGS+=	ARCH=arm
 .endif
 
 .if ${PORT_OPTIONS:MSTATICSSL}
-BUILD_DEPENDS+=${NONEXISTENT}:security/openssl:stage
+BUILD_DEPENDS+=${NONEXISTENT}:security/openssl35:extract
 CONFIGURE_ARGS+=--with-ssl=${WRKDIR}/openssl
+CONFIGURE_ARGS+=--with-ssl-lib-subdir=.
 CONFIGURE_ARGS+=--disable-dynamic-ssl-lib
+CONFIGURE_ARGS+=--disable-shared-zlib
+CONFIGURE_ARGS+=--enable-pie
 .endif
 
 pre-configure-WX-off:
@@ -116,9 +119,9 @@ pre-configure-WX-off:
 	echo "disabled by port options" > ${WRKSRC}/lib/wx/SKIP
 
 pre-configure-STATICSSL-on:
-	@cd `${MAKE} -V STAGEDIR -C ${PORTSDIR}/security/openssl`${PREFIX} \
-		&& ${FIND} -E . ! -name *.so\* | ${CPIO} -dump ${WRKDIR}/openssl \
-	 >/dev/null 2>&1
+	cd `${MAKE} -V WRKDIR -C ${PORTSDIR}/security/openssl35`/openssl*/ && \
+		${FIND} . | ${CPIO} -dump ${WRKDIR}/openssl
+	cd ${WRKDIR}/openssl && PERL=perl ./Configure enable-legacy -no-module -no-shared && make build_generated libcrypto.a
 
 post-configure-ODBC-on:
 	${RM} ${WRKSRC}/lib/odbc/SKIP
