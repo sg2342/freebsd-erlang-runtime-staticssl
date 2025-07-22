@@ -1,6 +1,6 @@
 PORTNAME=	erlang
 DISTVERSIONPREFIX=	OTP-
-DISTVERSION=	27.3.4
+DISTVERSION=	27.3.4.2
 CATEGORIES=	lang parallel java
 PKGNAMESUFFIX=	-runtime${PORTVERSION:C/\..*//}
 DIST_SUBDIR=	erlang
@@ -119,7 +119,7 @@ pre-configure-WX-off:
 	echo "disabled by port options" > ${WRKSRC}/lib/wx/SKIP
 
 pre-configure-STATICSSL-on:
-	cd `${MAKE} -V WRKDIR -C ${PORTSDIR}/security/openssl35`/openssl*/ && \
+	cd `${MAKE} -V WRKDIR -C ${PORTSDIR}/security/openssl34`/openssl*/ && \
 		${FIND} . | ${CPIO} -dump ${WRKDIR}/openssl
 	cd ${WRKDIR}/openssl && PERL=perl ./Configure enable-legacy -no-module -no-shared && make build_generated libcrypto.a
 
