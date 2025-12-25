@@ -104,7 +104,7 @@ MAKE_ARGS+=	ARCH=arm
 .endif
 
 .if ${PORT_OPTIONS:MSTATICSSL}
-BUILD_DEPENDS+=${NONEXISTENT}:security/openssl34:extract
+BUILD_DEPENDS+=${NONEXISTENT}:security/openssl36:extract
 CONFIGURE_ARGS+=--with-ssl=${WRKDIR}/openssl
 CONFIGURE_ARGS+=--with-ssl-lib-subdir=.
 CONFIGURE_ARGS+=--disable-dynamic-ssl-lib
@@ -119,7 +119,7 @@ pre-configure-WX-off:
 	echo "disabled by port options" > ${WRKSRC}/lib/wx/SKIP
 
 pre-configure-STATICSSL-on:
-	cd `${MAKE} -V WRKDIR -C ${PORTSDIR}/security/openssl34`/openssl*/ && \
+	cd `${MAKE} -V WRKDIR -C ${PORTSDIR}/security/openssl36`/openssl*/ && \
 		${FIND} . | ${CPIO} -dump ${WRKDIR}/openssl
 	cd ${WRKDIR}/openssl && PERL=perl ./Configure enable-legacy -no-module -no-shared && make build_generated libcrypto.a
 
