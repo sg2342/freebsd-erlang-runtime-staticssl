@@ -1,6 +1,6 @@
 PORTNAME=	rebar3
 PORTVERSION=	3.27.0
-PORTEPOCH=	1
+PORTEPOCH=	2
 CATEGORIES=	devel
 MASTER_SITES+=	https://repo.hex.pm/tarballs/:hex
 EXTRACT_ONLY=	${DISTNAME}${EXTRACT_SUFX}
@@ -11,8 +11,7 @@ WWW=		https://www.rebar3.org/
 
 LICENSE=	APACHE20
 
-BUILD_DEPENDS=	${LOCALBASE}/bin/erl:lang/erlang \
-		${LOCALBASE}/bin/git:devel/git
+BUILD_DEPENDS=	${LOCALBASE}/bin/erl:lang/erlang
 RUN_DEPENDS=	${LOCALBASE}/bin/erl:lang/erlang
 
 USES=		cpe
