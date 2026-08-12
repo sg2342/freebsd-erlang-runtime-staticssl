@@ -1,0 +1,434 @@
+index 12a125e8..f0b06891 100644
+--- apps/rebar/src/rebar_app_utils.erl
++++ apps/rebar/src/rebar_app_utils.erl.orig
+@@ -284,7 +284,17 @@ dep_to_app(Parent, DepsDir, Name, Vsn, Source0, IsLock, State) ->
+ %% and optionally get the version. Because of this we must keep the clone as a
+ %% usable git repo clone and using a subdir can not be copied out of it but must
+ %% have the app info set its directory to be a sub directory of the repo.
+-subdir(Name, {git_subdir, _Repo, _Ref, Dir}=Source) ->
++subdir(Name, {git_subdir, _Repo, _Ref, _Dir}=Source) ->
++    case os:getenv("REBAR_GIT_IS_GOT") of
++        false ->
++            git_subdir(Name, Source);
++        _ ->
++            {"", Source}
++    end;
++subdir(_, Source) ->
++    {"", Source}.
++
++git_subdir(Name, {git_subdir, _Repo, _Ref, Dir} = Source) ->
+     NameList = rebar_utils:to_list(Name),
+ 
+     %% To work with Erlang's `code' server the directory the application is in
+@@ -298,9 +308,7 @@ subdir(Name, {git_subdir, _Repo, _Ref, Dir}=Source) ->
+         false ->
+             NewDir = filename:join(Dir, NameList),
+             {NewDir, {git_subdir, _Repo, _Ref, NewDir}}
+-    end;
+-subdir(_, Source) ->
+-    {"", Source}.
++    end.
+ 
+ %% @doc Takes a given application app_info record along with the project.
+ %% If the app is a package, resolve and expand the package definition.
+index 032223b6..6fb97674 100644
+--- apps/rebar/src/rebar_git_resource.erl
++++ apps/rebar/src/rebar_git_resource.erl.orig
+@@ -37,9 +37,18 @@ lock(AppInfo, _) ->
+ lock_(AppDir, {git, Url, _}) ->
+     lock_(AppDir, {git, Url});
+ lock_(AppDir, {git, Url}) ->
++    AbortMsg = lists:flatten(io_lib:format("Locking of git dependency failed in ~ts", [AppDir])),
+     case git_vsn() of
++        got ->
++            {ok, Lines} = rebar_utils:sh("got log -l1",
++                                         [{use_stdout, false},
++                                          {debug_abort_on_error, AbortMsg},
++                                          {cd, AppDir}]),
++            CommitLine = string:nth_lexeme(Lines, 2 , "\n"),
++            Commit = string:nth_lexeme(CommitLine, 2, " "),
++            Ref = string:slice(Commit, 0, 8),
++            {git, Url, {ref, Ref}};
+         GitVsn when GitVsn >= {1,8,5} ->
+-            AbortMsg = lists:flatten(io_lib:format("Locking of git dependency failed in ~ts", [AppDir])),
+             Dir = rebar_utils:escape_double_quotes(AppDir),
+             {ok, VsnString} =
+                 case os:type() of
+@@ -63,14 +72,43 @@ needs_update(AppInfo, _) ->
+     check_type_support(),
+     needs_update_(rebar_app_info:dir(AppInfo), rebar_app_info:source(AppInfo)).
+ 
+-needs_update_(Dir, {git, Url, {tag, Tag}}) ->
++needs_update_(Dir, GitTuple) ->
++    needs_update_(git_vsn(), Dir, GitTuple).
++
++needs_update_(got, Dir, {git, Url, {What, TagOrBranch}})
++  when What =:= tag ; What =:= branch ->
++    RefsPfx =
++        case What of
++            tag -> "refs/tags/" ++ TagOrBranch ++ ": ";
++            branch -> "refs/heads/" ++ TagOrBranch ++ ": " end,
++    {ok, FetchOutput0} =
++        rebar_utils:sh("got fetch -l", [{cd, Dir}]),
++    FetchOutput1 = string:lexemes(FetchOutput0, "\n"),
++    FetchOutput2 = [string:prefix(S, RefsPfx) || S <- FetchOutput1],
++    [RemoteCommit] = [S || S <- FetchOutput2, S /= nomatch],
++    {ok, LogOutput0} = rebar_utils:sh("got log -l 1", [{cd, Dir}]),
++    LogOutput1 = string:nth_lexeme(LogOutput0, 2, "\n"),
++    LogOutput2 = string:prefix(LogOutput1, "commit "),
++    [WorkDirCommit | _] = string:split(LogOutput2, " ", leading),
++    not ((WorkDirCommit =:= RemoteCommit) andalso compare_url(Dir, Url));
++needs_update_(got, Dir, {git, Url, {ref, Ref}}) ->
++    needs_update_(got, Dir, {git, Url, Ref});
++needs_update_(got, Dir, {git, Url}) ->
++    needs_update_(got, Dir, {git, Url, "origin/HEAD"});
++needs_update_(got, Dir, {git, Url, Rev}) ->
++    {ok, Lines0} = rebar_utils:sh("got log -l 1", [{cd, Dir}]),
++    CommitLine0 = string:nth_lexeme(Lines0, 2, "\n"),
++    CommitLine1 = string:prefix(CommitLine0, "commit "),
++    [Commit | _] = string:split(CommitLine1, " ", leading),
++    not (is_list(string:prefix(Commit, Rev)) andalso compare_url(Dir, Url));
++needs_update_(_, Dir, {git, Url, {tag, Tag}}) ->
+     {ok, Current} = rebar_utils:sh(?FMT("git describe --tags --exact-match", []),
+                                    [{cd, Dir}]),
+     Current1 = rebar_string:trim(rebar_string:trim(Current, both, "\n"),
+                                  both, "\r"),
+     ?DEBUG("Comparing git tag ~ts with ~ts", [Tag, Current1]),
+     not ((Current1 =:= Tag) andalso compare_url(Dir, Url));
+-needs_update_(Dir, {git, Url, {branch, Branch}}) ->
++needs_update_(_, Dir, {git, Url, {branch, Branch}}) ->
+     %% Fetch remote so we can check if the branch has changed
+     SafeBranch = rebar_utils:escape_chars(Branch),
+     {ok, _} = rebar_utils:sh(?FMT("git fetch origin ~ts", [SafeBranch]),
+@@ -80,19 +118,19 @@ needs_update_(Dir, {git, Url, {branch, Branch}}) ->
+                                    [{cd, Dir}]),
+     ?DEBUG("Checking git branch ~ts for updates", [Branch]),
+     not ((Current =:= []) andalso compare_url(Dir, Url));
+-needs_update_(Dir, {git, Url, "main"}) ->
+-    needs_update_(Dir, {git, Url, {branch, "main"}});
+-needs_update_(Dir, {git, Url, "master"}) ->
+-    needs_update_(Dir, {git, Url, {branch, "master"}});
+-needs_update_(Dir, {git, Url}) ->
++needs_update_(GitVsn, Dir, {git, Url, "main"}) ->
++    needs_update_(GitVsn, Dir, {git, Url, {branch, "main"}});
++needs_update_(GitVsn, Dir, {git, Url, "master"}) ->
++    needs_update_(GitVsn, Dir, {git, Url, {branch, "master"}});
++needs_update_(_, Dir, {git, Url}) ->
+     {ok, _} = rebar_utils:sh("git fetch origin", [{cd, Dir}]),
+     {ok, Current} = rebar_utils:sh("git log HEAD..origin/HEAD --oneline",
+                                    [{cd, Dir}]),
+     ?DEBUG("Checking new commits from HEAD to origin/HEAD: ~.7ts", [Current]),
+     not ((Current =:= []) andalso compare_url(Dir, Url));
+-needs_update_(Dir, {git, Url, ""}) ->
+-    needs_update_(Dir, {git, Url});
+-needs_update_(Dir, {git, _, Ref}) ->
++needs_update_(GitVsn, Dir, {git, Url, ""}) ->
++    needs_update_(GitVsn, Dir, {git, Url});
++needs_update_(_, Dir, {git, _, Ref}) ->
+     {ok, Current} = rebar_utils:sh(?FMT("git rev-parse --short=7 -q HEAD", []),
+                                    [{cd, Dir}]),
+     Current1 = rebar_string:trim(rebar_string:trim(Current, both, "\n"),
+@@ -111,11 +149,28 @@ needs_update_(Dir, {git, _, Ref}) ->
+     ?DEBUG("Comparing git ref ~ts with ~ts", [Ref2, Current1]),
+     (Current1 =/= Ref2).
+ 
++got_url(Dir) ->
++    {ok, ConfigLines0} = file:read_file(filename:join([Dir, ".git", "config"])),
++    L0 = binary:split(ConfigLines0, [<<"\n">>], [trim, global]),
++    L1 = lists:dropwhile(fun(<<"[remote \"origin\"]">>) -> false;
++                            (_) -> true end, L0),
++    [Url0 | _] = lists:dropwhile(fun(<<"\turl =", _/binary>>) ->
++                                         false;
++                                    (_) -> true end, L1),
++    [_, BinUrl] = binary:split(Url0, [<<" = ">>]),
++    binary_to_list(BinUrl).
++
+ compare_url(Dir, Url) ->
+-    {ok, CurrentUrl} = rebar_utils:sh(?FMT("git config --get remote.origin.url", []),
+-                                      [{cd, Dir}]),
+-    CurrentUrl1 = rebar_string:trim(rebar_string:trim(CurrentUrl, both, "\n"),
+-                                     both, "\r"),
++    CurrentUrl1 =
++        case git_vsn() of
++            got -> got_url(Dir);
++            _->
++                {ok, CurrentUrl} =
++                    rebar_utils:sh(?FMT("git config --get remote.origin.url", []),
++                                   [{cd, Dir}]),
++                rebar_string:trim(rebar_string:trim(CurrentUrl, both, "\n"),
++                                     both, "\r")
++        end,
+     {ok, ParsedUrl} = parse_git_url(Url),
+     {ok, ParsedCurrentUrl} = parse_git_url(CurrentUrl1),
+     ?DEBUG("Comparing git url ~p with ~p", [ParsedUrl, ParsedCurrentUrl]),
+@@ -189,6 +244,30 @@ maybe_warn_local_url(Url) ->
+     end.
+ 
+ %% Use different git clone commands depending on git --version
++git_clone(What, got, Url, Dir, Branch) when What =:= branch ; What =:= tag ->
++    TmpRepoDir = ec_file:insecure_mkdtemp(),
++    rebar_utils:sh(?FMT("got clone -b ~ts ~ts ~ts",
++                        [rebar_utils:escape_chars(Branch),
++                         rebar_utils:escape_chars(Url),
++                         TmpRepoDir]), []),
++    rebar_utils:sh(?FMT("got checkout -b ~ts ~ts ~ts",
++                        [rebar_utils:escape_chars(Branch),
++                         TmpRepoDir, Dir]), []),
++    rebar_file_utils:mv(TmpRepoDir, filename:join(Dir, ".git")),
++    file:write_file(filename:join([Dir, ".got", "repository"]), ".git\n"),
++    ok;
++git_clone(What, got, Url, Dir, Ref) when What =:= ref ; What =:= rev ->
++    TmpRepoDir = ec_file:insecure_mkdtemp(),
++    rebar_utils:sh(?FMT("got clone -a ~ts ~ts",
++                        [rebar_utils:escape_chars(Url),
++                         TmpRepoDir]), []),
++    rebar_utils:sh(?FMT("got branch -c ~ts -r ~ts ~ts/~ts",
++                        [Ref, TmpRepoDir, Ref, Ref]), []),
++    rebar_utils:sh(?FMT("got checkout -b ~ts/~ts ~ts ~ts",
++                        [Ref, Ref, TmpRepoDir, Dir]), []),
++    rebar_file_utils:mv(TmpRepoDir, filename:join(Dir, ".git")),
++    file:write_file(filename:join([Dir, ".got", "repository"]), ".git\n"),
++    ok;
+ git_clone(branch, GitVsn, Url, Dir, Branch) when GitVsn >= {2,3,0}; GitVsn =:= undefined ->
+     rebar_utils:sh(?FMT("git clone ~ts ~ts ~ts -b ~ts --single-branch",
+                         [git_clone_options(),
+@@ -258,7 +337,11 @@ git_vsn() ->
+     case application:get_env(rebar, git_vsn) of
+         {ok, GitVsn} -> GitVsn;
+         undefined ->
+-            GitVsn = git_vsn_fetch(),
++            GitVsn =
++                case os:getenv("REBAR_GIT_IS_GOT") of
++                    false -> git_vsn_fetch();
++                    _ -> got
++                end,
+             application:set_env(rebar, git_vsn, GitVsn),
+             GitVsn
+     end.
+@@ -280,7 +363,12 @@ git_vsn_fetch() ->
+ 
+ make_vsn(AppInfo, _) ->
+     Dir = rebar_app_info:dir(AppInfo),
++    GitVsn = git_vsn(),
+     case rebar_app_info:original_vsn(AppInfo) of
++        {git, short} when GitVsn =:= got ->
++            got_ref(Dir, short);
++        {git, long} when GitVsn =:= got ->
++            got_ref(Dir, long);
+         {git, short} ->
+             git_ref(Dir, "--short");
+         {git, long} ->
+@@ -301,6 +389,26 @@ make_vsn_(Dir) ->
+ 
+ %% Internal functions
+ 
++got_ref(Dir, Arg) ->
++    case rebar_utils:sh("got log -l1",
++                        [{use_stdout, false},
++                         return_on_error,
++                         {cd, Dir}]) of
++        {error, _} ->
++             ?WARN("Getting ref of git repo failed in ~ts. "
++                  "Falling back to version 0", [Dir]),
++            {plain, "0"};
++        {ok, Lines} ->
++            CommitLine =  string:nth_lexeme(Lines, 2, "\n"),
++            Ref = string:nth_lexeme(CommitLine, 2, " "),
++            case Arg of
++                short ->
++                    {plain, string:slice(Ref, 0, 8)};
++                long ->
++                    {plain, Ref}
++            end
++    end.
++
+ git_ref(Dir, Arg) ->
+     case rebar_utils:sh("git rev-parse " ++ Arg ++ " HEAD",
+                        [{use_stdout, false},
+@@ -315,6 +423,14 @@ git_ref(Dir, Arg) ->
+     end.
+ 
+ collect_default_refcount(Dir) ->
++    case git_vsn() of
++        got ->
++            collect_default_refcount_got(Dir);
++        _ ->
++            collect_default_refcount_git(Dir)
++    end.
++
++collect_default_refcount_git(Dir) ->
+     %% Get the tag timestamp and minimal ref from the system. The
+     %% timestamp is really important from an ordering perspective.
+     Command = "git log -n 1 --pretty=format:\"%h\n\" ",
+@@ -348,6 +464,57 @@ collect_default_refcount(Dir) ->
+             {TagVsn, RawRef, RawCount}
+     end.
+ 
++collect_default_refcount_got(Dir) ->
++    Command0 = "got log -l 1",
++    case rebar_utils:sh(Command0,
++                        [{use_stdout, false},
++                         return_on_error,
++                         {cd, Dir}]) of
++        {error, {Rc, Error}} ->
++             ?WARN("Getting log of git repo failed in ~ts. "
++                  "Falling back to version 0.0.0", [Dir]),
++            ?DIAGNOSTIC("Command sh(~ts)~n"
++                        "returned error code ~w with the following output:~n"
++                        "~ts", [Command0, Rc, Error]),
++            {plain, "0.0.0"};
++        {ok, Lines0} ->
++            CommitLine0 = string:nth_lexeme(Lines0, 2, "\n"),
++            CommitLine1 = string:prefix(CommitLine0, "commit "),
++            [RawRef | MaybeTagsAndBranches] = string:split(CommitLine1, " ", leading),
++            case got_parse_tags(MaybeTagsAndBranches) of
++                [Tag | _] ->
++                    {Tag, string:slice(RawRef, 0, 8), 0};
++                [] ->
++                    {Tag, RawCount} =
++                        got_tag_and_count(Dir),
++                    {Tag, string:slice(RawRef, 0, 8), RawCount}
++            end
++    end.
++
++got_parse_tags([String0]) when is_list(String0), length(String0) > 2 ->
++    String = string:slice(String0, 1, string:length(String0) -2),
++    Tags0 = string:split(String, ", ", all),
++    Tags1 = [ string:prefix(S, "tags/") || S <- Tags0 ],
++    [ S || S <- Tags1, S /= nomatch ];
++got_parse_tags(_) -> [].
++
++got_tag_and_count(Dir) ->
++    AbortMsg2 = "Getting rev-list of git dependency failed in " ++ Dir,
++    {ok, Lines} = rebar_utils:sh("got log -b -t -s",
++                                 [{cd, Dir},
++                                  {use_stdout, false},
++                                  {debug_abort_on_error, AbortMsg2}]),
++    got_tag_and_count(string:lexemes(Lines, "\n"), 0).
++
++got_tag_and_count([], Count) -> {"0.0.0", Count};
++got_tag_and_count([Line | Rest], Count) ->
++    case string:prefix(string:nth_lexeme(Line, 2, " "), "tags/") of
++        nomatch ->
++            got_tag_and_count(Rest, Count + 1);
++        Tag ->
++            {Tag, Count}
++    end.
++
+ build_vsn_string(Vsn, RawRef, Count) ->
+     %% Cleanup the tag and the Ref information. Basically leading 'v's and
+     %% whitespace needs to go away.
+index 9e423693..5c66951d 100644
+--- apps/rebar/src/rebar_git_subdir_resource.erl
++++ apps/rebar/src/rebar_git_subdir_resource.erl.orig
+@@ -29,6 +29,39 @@ lock(AppInfo, _) ->
+     {git_subdir, Url1, {ref, Ref}, Dir}.
+ 
+ download(TmpDir, AppInfo, State, _) ->
++    case os:getenv("REBAR_GIT_IS_GOT") of
++        false ->
++            download(TmpDir, AppInfo, State);
++        _ ->
++            download_got(TmpDir, rebar_app_info:source(AppInfo))
++    end.
++
++download_got(Dir, {git_subdir, Url, {branch, Branch}, SparseDir}) ->
++    download_got(Dir, {git_subdir, Url, {tag, Branch}, SparseDir});
++download_got(Dir, {git_subdir, Url, {tag, Tag}, SparseDir}) ->
++    TmpRepoDir = ec_file:insecure_mkdtemp(),
++    rebar_utils:sh(?FMT("got clone -b ~ts ~ts ~ts",
++                        [rebar_utils:escape_chars(Tag),
++                         rebar_utils:escape_chars(Url),
++                         TmpRepoDir]), []),
++    rebar_utils:sh(?FMT("got checkout -b ~ts -p ~ts ~ts ~ts",
++                        [rebar_utils:escape_chars(Tag),
++                         SparseDir, TmpRepoDir, Dir]), []),
++    rebar_file_utils:mv(TmpRepoDir, filename:join(Dir, ".git")),
++    file:write_file(filename:join([Dir, ".got", "repository"]), ".git\n");
++download_got(Dir, {git_subdir, Url, {ref, Ref}, SparseDir}) ->
++    TmpRepoDir = ec_file:insecure_mkdtemp(),
++    rebar_utils:sh(?FMT("got clone -a ~ts ~ts",
++                        [rebar_utils:escape_chars(Url),
++                         TmpRepoDir]), []),
++    rebar_utils:sh(?FMT("got branch -c ~ts -r ~ts ~ts/~ts",
++                        [Ref, TmpRepoDir, Ref, Ref]), []),
++    rebar_utils:sh(?FMT("got checkout -b ~ts/~ts -p ~ts ~ts ~ts",
++                        [Ref, Ref, SparseDir, TmpRepoDir, Dir]), []),
++    rebar_file_utils:mv(TmpRepoDir, filename:join(Dir, ".git")),
++    file:write_file(filename:join([Dir, ".got", "repository"]), ".git\n").
++
++download(TmpDir, AppInfo, State) ->
+     Name = rebar_app_info:name(AppInfo),
+     {git_subdir, Url, Checkout, SparseDir} = rebar_app_info:source(AppInfo),
+     case rebar_git_resource:download_(TmpDir, {git, Url, Checkout}, State) of
+index 9f12db1c..37091943 100644
+--- vendor/relx/src/rlx_config.erl
++++ vendor/relx/src/rlx_config.erl.orig
+@@ -212,6 +212,20 @@ try_vsn(Fun) ->
+     end.
+ 
+ git_ref(Arg) ->
++    case os:getenv("REBAR_GIT_IS_GOT") of
++	false -> git_ref_(Arg);
++	_ when Arg =:= "--short" ->
++	    string:slice(got_ref(), 0, 8);
++	_ ->
++	    got_ref()
++    end.
++
++got_ref() ->
++    Lines = rlx_util:sh("got log -l1"),
++    Line = string:nth_lexeme(Lines, 2, "\n"),
++    string:nth_lexeme(Line, 2, "\n").
++
++git_ref_(Arg) ->
+     String = rlx_util:sh("git rev-parse " ++ Arg ++ " HEAD"),
+     Vsn = rlx_string:trim(String, both, "\n"),
+     case length(Vsn) =:= 40 orelse length(Vsn) =:= 7 of
+@@ -227,9 +241,45 @@ git_ref(Arg) ->
+     end.
+ 
+ git_tag_vsn() ->
+-    {Vsn, RawRef, RawCount} = collect_default_refcount(),
++    {Vsn, RawRef, RawCount} =
++	case os:getenv("REBAR_GIT_IS_GOT") of
++	    false -> collect_default_refcount();
++	    _ -> collect_default_refcount_got()
++	end,
+     build_vsn_string(Vsn, RawRef, RawCount).
+ 
++collect_default_refcount_got() ->
++    Lines = rlx_util:sh("got log -l1"),
++    Line0 = string:nth_lexeme(Lines, 2, "\n"),
++    Line = string:prefix(Line0, "commit "),
++    [Commit | MaybeTagsAndBranches] = string:split(Line, " ", leading),
++    ShortCommit = string:slice(Commit, 0, 8),
++    case got_parse_tags(MaybeTagsAndBranches) of
++	[Tag | _ ] ->
++	    {Tag, ShortCommit, "0"};
++	_ ->
++	    {Tag, Count} = got_tag_and_count(),
++	    {Tag, ShortCommit, integer_to_list(Count)}
++    end.
++
++got_parse_tags([String0]) when is_list(String0), length(String0) > 2 ->
++    String = string:slice(String0, 1, string:length(String0) - 2),
++    Tags0 = string:split(String, ", ", all),
++    Tags1 = [ string:prefix(S, "tags/") || S <- Tags0 ],
++    [ S || S <- Tags1, S =/= nomatch ];
++got_parse_tags(_) -> [].
++
++got_tag_and_count() ->
++    Lines = rlx_util:sh("got log -b -t -s"),
++    got_tag_and_count(string:lexemes(Lines, "\n"), 0).
++
++got_tag_and_count([], Count) -> {"0.0.0", Count};
++got_tag_and_count([Line | Rest], Count) ->
++    case string:prefix(string:nth_lexeme(Line, 2, " "), "tags/") of
++	nomatch -> got_tag_and_count(Rest, Count + 1);
++	Tag -> {Tag, Count}
++    end.
++
+ collect_default_refcount() ->
+     %% Get the tag timestamp and minimal ref from the system. The
+     %% timestamp is really important from an ordering perspective.
