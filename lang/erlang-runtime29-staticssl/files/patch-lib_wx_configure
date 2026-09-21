@@ -1,0 +1,11 @@
+--- lib/wx/configure.orig       2026-09-20 17:28:44.523025000 +0000
++++ lib/wx/configure    2026-09-20 17:28:58.832603000 +0000
+@@ -12,6 +12,8 @@
+ ## -------------------- ##
+ ## M4sh Initialization. ##
+ ## -------------------- ##
++
++WX_CONFIG_NAME=$WX_CONFIG
+ 
+ # Be more Bourne compatible
+ DUALCASE=1; export DUALCASE # for MKS sh
