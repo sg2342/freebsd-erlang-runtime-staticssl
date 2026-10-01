@@ -165,7 +165,7 @@ index 032223b6..6fb97674 100644
      end.
  
  %% Use different git clone commands depending on git --version
-+git_clone(What, got, Url, Dir, Branch) when What =:= branch ; What =:= tag ->
++git_clone(branch, got, Url, Dir, Branch) ->
 +    TmpRepoDir = ec_file:insecure_mkdtemp(),
 +    rebar_utils:sh(?FMT("got clone -b ~ts ~ts ~ts",
 +                        [rebar_utils:escape_chars(Branch),
@@ -177,7 +177,7 @@ index 032223b6..6fb97674 100644
 +    rebar_file_utils:mv(TmpRepoDir, filename:join(Dir, ".git")),
 +    file:write_file(filename:join([Dir, ".got", "repository"]), ".git\n"),
 +    ok;
-+git_clone(What, got, Url, Dir, Ref) when What =:= ref ; What =:= rev ->
++git_clone(What, got, Url, Dir, Ref) when What =:= ref ; What =:= rev ; What =:= tag ->
 +    TmpRepoDir = ec_file:insecure_mkdtemp(),
 +    rebar_utils:sh(?FMT("got clone -a ~ts ~ts",
 +                        [rebar_utils:escape_chars(Url),
